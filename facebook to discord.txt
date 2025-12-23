@@ -1,0 +1,104 @@
+import requests
+import time
+import os
+from playwright.sync_api import sync_playwright
+
+# --- CONFIGURATION ---
+FB_PAGE_URL = "https://www.facebook.com/bomboradyophilippines" 
+DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1452838041000345610/xum2Ov3bem-DX-1cf9UPoQQUhmzHVBGrRvVlSGRJTFoSKM-qWqv3NFKUl_Myy4KzFzJv'
+CHECK_INTERVAL = 600  
+SAVE_FILE = "last_post_text.txt"
+
+def get_latest_fb_post_playwright(page_url):
+    """Scrapes the newest post text, image URL, AND the post's specific URL."""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
+            page = context.new_page()
+            page.goto(page_url)
+            
+            # Wait for content to load
+            page.wait_for_selector('div[role="main"]', timeout=15000)
+            
+            # 1. Identify the first post container
+            # We use a broad selector that targets the feed items
+            post_container = page.locator('div[data-ad-preview="message"]').first.locator("xpath=./ancestor::div[contains(@class, 'x1yzt60q')]").first
+            
+            if post_container.count() == 0:
+                # Fallback if the strict container isn't found
+                post_container = page.locator('div[data-ad-preview="message"]').first.locator("xpath=../..")
+
+            # 2. Extract the Text
+            newest_text = page.locator('div[data-ad-preview="message"]').first.inner_text().strip()
+
+            # 3. Extract the Post URL (Permalink)
+            # Facebook usually puts the link on the timestamp. 
+            # We look for a link that contains "/posts/" or "/videos/" or "permalink"
+            post_link = page_url # Default fallback
+            link_elements = post_container.locator('a[role="link"]').all()
+            for link in link_elements:
+                href = link.get_attribute("href")
+                if href and ("/posts/" in href or "/videos/" in href or "permalink.php" in href):
+                    # Clean the URL (remove tracking parameters)
+                    post_link = href.split('?')[0]
+                    break
+
+            # 4. Extract the Image URL
+            img_locator = post_container.locator("img").first
+            img_url = img_locator.get_attribute("src") if img_locator.count() > 0 else None
+
+            browser.close()
+            return newest_text, img_url, post_link
+    except Exception as e:
+        print(f"Error during Playwright scrape: {e}")
+    return None, None, None
+
+def send_to_discord(content, img_url, post_url):
+    """Sends a rich Embed to Discord with the specific Post URL."""
+    payload = {
+        "embeds": [{
+            "title": "📢 New Facebook Post Found!",
+            "description": content[:2000], # Discord limit is 4096
+            "url": post_url,  # THIS IS NOW THE SPECIFIC POST URL
+            "color": 16711680,
+            "image": {"url": img_url} if img_url else None,
+            "footer": {"text": f"Source: Bombo Radyo | {time.strftime('%Y-%m-%d %H:%M:%S')}"}
+        }]
+    }
+    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+
+# --- MAIN LOOP ---
+print("Bot active. Searching for specific post links...")
+while True:
+    print(f"[{time.strftime('%H:%M:%S')}] Checking Facebook...")
+    current_text, current_img, current_url = get_latest_fb_post_playwright(FB_PAGE_URL)
+    
+    if current_text:
+        last_text = ""
+        if os.path.exists(SAVE_FILE):
+            with open(SAVE_FILE, "r", encoding="utf-8") as f:
+                last_text = f.read().strip()
+
+        if current_text != last_text:
+            print(f"New post found! Link: {current_url}")
+            send_to_discord(current_text, current_img, current_url)
+            
+            with open(SAVE_FILE, "w", encoding="utf-8") as f:
+                f.write(current_text)
+        else:
+            print("No new posts.")
+    
+    time.sleep(CHECK_INTERVAL)
+
+
+
+
+
+
+""""""INSTALL""""""RUN IN TERMINAL""""""
+
+
+pip install MetaDataScraper requests
+	pip install playwright requests
+playwright install chromium
